@@ -76,6 +76,9 @@ CREATE TABLE ChiTietHD (
   FOREIGN KEY (MaHD) REFERENCES HoaDon(MaHD),
   FOREIGN KEY (MaHang) REFERENCES HangHoa(MaHang)
 );
+-------------------------
+ALTER TABLE ChiTietHD
+ADD ThanhTien INT;
 
 CREATE TABLE KhuyenMai (
   MaKM NVARCHAR(10) NOT NULL PRIMARY KEY,
@@ -189,3 +192,218 @@ JOIN
   HangHoa hh ON cthd.MaHang = hh.MaHang;
 
   SELECT * FROM ChiTietHD_View;
+
+CREATE TYPE LoaiHangMua AS TABLE (
+    MaHang NVARCHAR(10),
+    SoLuong INT
+);
+
+--------------------------------------------------
+-- Xoá proc nếu đã tồn tại
+-- Xóa proc nếu đã tồn tại
+IF OBJECT_ID('sp_ThemHoaDonMoi', 'P') IS NOT NULL
+    DROP PROCEDURE sp_ThemHoaDonMoi;
+GO
+
+CREATE PROCEDURE sp_ThemHoaDonMoi
+    @MaHD NVARCHAR(10),
+    @MaKH NVARCHAR(10),
+    @MaNV NVARCHAR(10),
+    @MaChiNhanh NVARCHAR(10),
+    @DSHang LoaiHangMua READONLY
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- 1. Thêm hóa đơn mới (tạm TongTien = 0)
+    INSERT INTO HoaDon (MaHD, MaKH, MaNV, MaChiNhanh, TongTien)
+    VALUES (@MaHD, @MaKH, @MaNV, @MaChiNhanh, 0);
+
+    -- 2. Biến cục bộ
+    DECLARE @MaHang NVARCHAR(10), @SoLuong INT;
+    DECLARE @DonGia INT, @ThanhTien INT, @TongTien INT = 0;
+
+    -- 3. Cursor duyệt từng hàng mua
+    DECLARE cur CURSOR FOR
+        SELECT MaHang, SoLuong FROM @DSHang;
+
+    OPEN cur;
+    FETCH NEXT FROM cur INTO @MaHang, @SoLuong;
+
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        -- Lấy đơn giá từ bảng HangHoa
+        SELECT @DonGia = DonGia FROM HangHoa WHERE MaHang = @MaHang;
+
+        -- Tính thành tiền
+        SET @ThanhTien = @DonGia * @SoLuong;
+
+        -- Chèn chi tiết hóa đơn (cần đủ các cột)
+        INSERT INTO ChiTietHD (MaHD, MaHang, SoLuong, DonGia, ThanhTien)
+        VALUES (@MaHD, @MaHang, @SoLuong, @DonGia, @ThanhTien);
+
+        -- Trừ tồn kho tại chi nhánh
+        UPDATE TonKho
+        SET SoLuongTon = SoLuongTon - @SoLuong
+        WHERE MaHang = @MaHang AND MaChiNhanh = @MaChiNhanh;
+
+        -- Cộng dồn tổng tiền
+        SET @TongTien = @TongTien + @ThanhTien;
+
+        FETCH NEXT FROM cur INTO @MaHang, @SoLuong;
+    END
+
+    CLOSE cur;
+    DEALLOCATE cur;
+
+    -- 4. Cập nhật tổng tiền vào hóa đơn
+    UPDATE HoaDon
+    SET TongTien = @TongTien
+    WHERE MaHD = @MaHD;
+END
+GO
+
+insert ChiTietHD
+
+EXEC sp_ThemHoaDonMoi 
+    @MaHD = N'HD03', 
+    @MaKH = N'KH01', 
+    @MaNV = N'NV01', 
+    @MaChiNhanh = N'CN01', 
+    @DSHang = @DS;
+
+	select * from HoaDon
+	select * from ChiTietHD
+--------------------------------------------------------------------------
+--Không cho lập hóa đơn nếu hàng không đủ tồn kho tại chi nhánh đang giao dịch.
+IF OBJECT_ID('trg_CheckTonKho', 'TR') IS NOT NULL
+    DROP TRIGGER trg_CheckTonKho;
+GO
+CREATE TRIGGER trg_CheckTonKho
+ON ChiTietHD
+AFTER INSERT, update
+AS
+BEGIN
+    -- Biến để lấy dữ liệu từ bảng inserted
+    DECLARE @MaHang NVARCHAR(10), @SoLuong INT, @MaChiNhanh NVARCHAR(10);
+
+    -- Giả sử mỗi hóa đơn thuộc về một chi nhánh (lấy từ bảng HoaDon)
+    SELECT 
+        @MaHang = i.MaHang,
+        @SoLuong = i.SoLuong,
+        @MaChiNhanh = h.MaChiNhanh
+    FROM inserted i
+    JOIN HoaDon h ON i.MaHD = h.MaHD;
+
+    -- Kiểm tra số lượng tồn kho
+    IF EXISTS (
+        SELECT * FROM TonKho
+        WHERE MaHang = @MaHang AND MaChiNhanh = @MaChiNhanh AND SoLuongTon < @SoLuong
+    )
+    BEGIN
+        RAISERROR(N'Số lượng tồn kho không đủ để bán!', 16, 1);
+        ROLLBACK TRANSACTION;
+    END
+END
+SELECT * FROM TonKho WHERE MaHang = 'H01' AND MaChiNhanh = 'CN01';
+select*from ChiTietHD
+
+update ChiTietHD
+set SoLuong = 57
+where MaHang ='H01'
+
+
+--Tự động cập nhật lại bảng TonKho khi thêm một dòng mới trong ChiTietHD.
+-- Xoá trigger cũ nếu có
+IF OBJECT_ID('trg_UpdateTonKho', 'TR') IS NOT NULL
+    DROP TRIGGER trg_UpdateTonKho;
+GO
+
+-- Tạo lại trigger có dùng biến cục bộ
+CREATE TRIGGER trg_UpdateTonKho
+ON ChiTietHD
+AFTER INSERT, update
+AS
+BEGIN
+    DECLARE @MaHang NVARCHAR(10);
+    DECLARE @MaHD NVARCHAR(10);
+    DECLARE @SoLuong INT;
+    DECLARE @MaChiNhanh NVARCHAR(10);
+
+    -- Lấy dữ liệu từ bảng inserted (chỉ đúng nếu insert 1 dòng)
+    SELECT 
+        @MaHang = MaHang,
+        @MaHD = MaHD,
+        @SoLuong = SoLuong
+    FROM inserted;
+
+    -- Lấy mã chi nhánh tương ứng từ bảng HoaDon
+    SELECT @MaChiNhanh = MaChiNhanh FROM HoaDon WHERE MaHD = @MaHD;
+
+    -- Cập nhật số lượng tồn trong TonKho
+    UPDATE TonKho
+    SET SoLuongTon = SoLuongTon - @SoLuong
+    WHERE MaHang = @MaHang AND MaChiNhanh = @MaChiNhanh;
+END
+GO
+SELECT * FROM HoaDon WHERE MaHD = 'HD01';
+SELECT * FROM TonKho WHERE MaHang = 'H01' AND MaChiNhanh = 'CN01';
+update ChiTietHD
+set SoLuong = 6
+where MaHang ='H01'
+
+-------------------------
+--Tính thành tiền cho chi tiết hóa đơn
+-- Xoá trigger cũ nếu tồn tại
+IF OBJECT_ID('trg_InsertChiTietHD', 'TR') IS NOT NULL
+    DROP TRIGGER trg_InsertChiTietHD;
+GO
+
+-- Tạo trigger mới
+CREATE TRIGGER trg_InsertChiTietHD
+ON ChiTietHD
+AFTER INSERT,update
+AS
+BEGIN
+    -- Cập nhật ThanhTien = SoLuong * DonGia cho từng dòng được chèn vào
+    UPDATE cthd
+    SET cthd.ThanhTien = i.SoLuong * i.DonGia
+    FROM ChiTietHD cthd
+    JOIN inserted i ON cthd.MaHD = i.MaHD AND cthd.MaHang = i.MaHang;
+END;
+GO
+--Cập nhật trạng thái hàng hóa (ví dụ: chuyển TrangThai thành "Hết hàng") nếu sau bán mà tồn kho = 0.
+-- Xoá trigger cũ nếu tồn tại
+IF OBJECT_ID('trg_CapNhatTrangThai', 'TR') IS NOT NULL
+    DROP TRIGGER trg_CapNhatTrangThai;
+GO
+
+-- Tạo trigger mới
+CREATE TRIGGER trg_CapNhatTrangThai
+ON TonKho
+AFTER UPDATE
+AS
+BEGIN
+    DECLARE @MaHang NVARCHAR(10);
+    DECLARE @SoLuongTon INT;
+
+    -- Giả định chỉ cập nhật 1 dòng mỗi lần (nếu nhiều dòng thì phải dùng CURSOR hoặc JOIN)
+    SELECT TOP 1 @MaHang = i.MaHang, @SoLuongTon = i.SoLuongTon
+    FROM inserted i;
+
+    IF @SoLuongTon = 0
+    BEGIN
+        UPDATE HangHoa
+        SET TrangThai = N'Hết hàng'
+        WHERE MaHang = @MaHang;
+    END
+END;
+GO
+-- Kiểm tra số lượng tồn kho và trạng thái hiện tại
+SELECT tk.MaHang, tk.SoLuongTon, hh.TrangThai
+FROM TonKho tk
+JOIN HangHoa hh ON tk.MaHang = hh.MaHang;
+UPDATE TonKho
+SET SoLuongTon = 0
+WHERE MaHang = 'H01';
+--Không cho nhập hàng nếu đã tồn tại sản phẩm có cùng TenHang và LoaiHang trong cùng chi nhánh.
