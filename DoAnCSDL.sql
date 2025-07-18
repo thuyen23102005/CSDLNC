@@ -76,9 +76,7 @@ CREATE TABLE ChiTietHD (
   FOREIGN KEY (MaHD) REFERENCES HoaDon(MaHD),
   FOREIGN KEY (MaHang) REFERENCES HangHoa(MaHang)
 );
--------------------------
-ALTER TABLE ChiTietHD
-ADD ThanhTien INT;
+
 
 CREATE TABLE KhuyenMai (
   MaKM NVARCHAR(10) NOT NULL PRIMARY KEY,
@@ -178,6 +176,8 @@ INSERT INTO KhuVucKM (MaKM, MaKhuVuc) VALUES
 INSERT INTO ApDung (MaHang, MaKM) VALUES
 (N'H01', N'KM01'),
 (N'H02', N'KM02');
+
+
 --Tạo bảng ảo xem tên sản phẩm trong chi tiết hóa đơn
 CREATE VIEW ChiTietHD_View AS
 SELECT 
@@ -198,82 +198,24 @@ CREATE TYPE LoaiHangMua AS TABLE (
     SoLuong INT
 );
 
---------------------------------------------------
--- Xoá proc nếu đã tồn tại
--- Xóa proc nếu đã tồn tại
-IF OBJECT_ID('sp_ThemHoaDonMoi', 'P') IS NOT NULL
-    DROP PROCEDURE sp_ThemHoaDonMoi;
-GO
+-------------------------
+ALTER TABLE ChiTietHD
+ADD ThanhTien INT;
 
-CREATE PROCEDURE sp_ThemHoaDonMoi
-    @MaHD NVARCHAR(10),
-    @MaKH NVARCHAR(10),
-    @MaNV NVARCHAR(10),
-    @MaChiNhanh NVARCHAR(10),
-    @DSHang LoaiHangMua READONLY
+IF OBJECT_ID('sp_CapNhatThanhTien', 'TR') IS NOT NULL
+    DROP TRIGGER sp_CapNhatThanhTien;
+GO
+CREATE PROCEDURE sp_CapNhatThanhTien
 AS
 BEGIN
     SET NOCOUNT ON;
 
-    -- 1. Thêm hóa đơn mới (tạm TongTien = 0)
-    INSERT INTO HoaDon (MaHD, MaKH, MaNV, MaChiNhanh, TongTien)
-    VALUES (@MaHD, @MaKH, @MaNV, @MaChiNhanh, 0);
-
-    -- 2. Biến cục bộ
-    DECLARE @MaHang NVARCHAR(10), @SoLuong INT;
-    DECLARE @DonGia INT, @ThanhTien INT, @TongTien INT = 0;
-
-    -- 3. Cursor duyệt từng hàng mua
-    DECLARE cur CURSOR FOR
-        SELECT MaHang, SoLuong FROM @DSHang;
-
-    OPEN cur;
-    FETCH NEXT FROM cur INTO @MaHang, @SoLuong;
-
-    WHILE @@FETCH_STATUS = 0
-    BEGIN
-        -- Lấy đơn giá từ bảng HangHoa
-        SELECT @DonGia = DonGia FROM HangHoa WHERE MaHang = @MaHang;
-
-        -- Tính thành tiền
-        SET @ThanhTien = @DonGia * @SoLuong;
-
-        -- Chèn chi tiết hóa đơn (cần đủ các cột)
-        INSERT INTO ChiTietHD (MaHD, MaHang, SoLuong, DonGia, ThanhTien)
-        VALUES (@MaHD, @MaHang, @SoLuong, @DonGia, @ThanhTien);
-
-        -- Trừ tồn kho tại chi nhánh
-        UPDATE TonKho
-        SET SoLuongTon = SoLuongTon - @SoLuong
-        WHERE MaHang = @MaHang AND MaChiNhanh = @MaChiNhanh;
-
-        -- Cộng dồn tổng tiền
-        SET @TongTien = @TongTien + @ThanhTien;
-
-        FETCH NEXT FROM cur INTO @MaHang, @SoLuong;
-    END
-
-    CLOSE cur;
-    DEALLOCATE cur;
-
-    -- 4. Cập nhật tổng tiền vào hóa đơn
-    UPDATE HoaDon
-    SET TongTien = @TongTien
-    WHERE MaHD = @MaHD;
-END
-GO
-
-insert ChiTietHD
-
-EXEC sp_ThemHoaDonMoi 
-    @MaHD = N'HD03', 
-    @MaKH = N'KH01', 
-    @MaNV = N'NV01', 
-    @MaChiNhanh = N'CN01', 
-    @DSHang = @DS;
-
-	select * from HoaDon
-	select * from ChiTietHD
+    UPDATE ChiTietHD
+    SET ThanhTien = SoLuong * DonGia;
+END;
+EXEC sp_CapNhatThanhTien;
+select * from HoaDon
+select * from ChiTietHD
 --------------------------------------------------------------------------
 --Không cho lập hóa đơn nếu hàng không đủ tồn kho tại chi nhánh đang giao dịch.
 IF OBJECT_ID('trg_CheckTonKho', 'TR') IS NOT NULL
@@ -286,7 +228,6 @@ AS
 BEGIN
     -- Biến để lấy dữ liệu từ bảng inserted
     DECLARE @MaHang NVARCHAR(10), @SoLuong INT, @MaChiNhanh NVARCHAR(10);
-
     -- Giả sử mỗi hóa đơn thuộc về một chi nhánh (lấy từ bảng HoaDon)
     SELECT 
         @MaHang = i.MaHang,
@@ -294,7 +235,6 @@ BEGIN
         @MaChiNhanh = h.MaChiNhanh
     FROM inserted i
     JOIN HoaDon h ON i.MaHD = h.MaHD;
-
     -- Kiểm tra số lượng tồn kho
     IF EXISTS (
         SELECT * FROM TonKho
@@ -309,7 +249,7 @@ SELECT * FROM TonKho WHERE MaHang = 'H01' AND MaChiNhanh = 'CN01';
 select*from ChiTietHD
 
 update ChiTietHD
-set SoLuong = 57
+set SoLuong = 1
 where MaHang ='H01'
 
 
@@ -318,7 +258,6 @@ where MaHang ='H01'
 IF OBJECT_ID('trg_UpdateTonKho', 'TR') IS NOT NULL
     DROP TRIGGER trg_UpdateTonKho;
 GO
-
 -- Tạo lại trigger có dùng biến cục bộ
 CREATE TRIGGER trg_UpdateTonKho
 ON ChiTietHD
@@ -329,7 +268,6 @@ BEGIN
     DECLARE @MaHD NVARCHAR(10);
     DECLARE @SoLuong INT;
     DECLARE @MaChiNhanh NVARCHAR(10);
-
     -- Lấy dữ liệu từ bảng inserted (chỉ đúng nếu insert 1 dòng)
     SELECT 
         @MaHang = MaHang,
@@ -347,31 +285,18 @@ BEGIN
 END
 GO
 SELECT * FROM HoaDon WHERE MaHD = 'HD01';
+SELECT * FROM ChiTietHD 
 SELECT * FROM TonKho WHERE MaHang = 'H01' AND MaChiNhanh = 'CN01';
+
 update ChiTietHD
-set SoLuong = 6
+set SoLuong = 2
 where MaHang ='H01'
 
+INSERT INTO ChiTietHD (MaHD, MaHang, SoLuong, DonGia) VALUES
+(N'HD02', N'H01', 1, 10000)
 -------------------------
---Tính thành tiền cho chi tiết hóa đơn
--- Xoá trigger cũ nếu tồn tại
-IF OBJECT_ID('trg_InsertChiTietHD', 'TR') IS NOT NULL
-    DROP TRIGGER trg_InsertChiTietHD;
-GO
 
--- Tạo trigger mới
-CREATE TRIGGER trg_InsertChiTietHD
-ON ChiTietHD
-AFTER INSERT,update
-AS
-BEGIN
-    -- Cập nhật ThanhTien = SoLuong * DonGia cho từng dòng được chèn vào
-    UPDATE cthd
-    SET cthd.ThanhTien = i.SoLuong * i.DonGia
-    FROM ChiTietHD cthd
-    JOIN inserted i ON cthd.MaHD = i.MaHD AND cthd.MaHang = i.MaHang;
-END;
-GO
+
 --Cập nhật trạng thái hàng hóa (ví dụ: chuyển TrangThai thành "Hết hàng") nếu sau bán mà tồn kho = 0.
 -- Xoá trigger cũ nếu tồn tại
 IF OBJECT_ID('trg_CapNhatTrangThai', 'TR') IS NOT NULL
