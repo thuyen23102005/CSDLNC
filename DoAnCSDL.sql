@@ -133,7 +133,21 @@ CREATE TABLE NhanVien_SDT (
     PRIMARY KEY (SDT, MaNV),
     FOREIGN KEY (MaNV) REFERENCES NhanVien(MaNV)
 );
-
+SELECT * FROM ApDung
+SELECT * FROM ChiNhanh
+SELECT * FROM ChiTietHD
+SELECT * FROM Con
+SELECT * FROM HangHoa
+SELECT * FROM HoaDon
+SELECT * FROM KhachHang
+SELECT * FROM KhachHang_SDT
+SELECT * FROM KhuVuc
+SELECT * FROM KhuVucKM
+SELECT * FROM KhuyenMai
+SELECT * FROM LoaiHang
+SELECT * FROM NhanVien
+SELECT * FROM NhanVien_SDT
+SELECT * FROM TonKho
 ------------------------------------------------------------------------------
 IF OBJECT_ID('trg_KhongTrungTenLoaiTrongCN', 'TR') IS NOT NULL
     DROP TRIGGER trg_KhongTrungTenLoaiTrongCN;
@@ -357,7 +371,6 @@ EXEC sp_ThemHangVaTon N'H08', N'Trà xanh C2', N'L02', 90, N'Còn hàng', 8000, 
 EXEC sp_ThemHangVaTon N'H09', N'Muối i-ốt', N'L03', 50, N'Còn hàng', 5000, N'Gói', N'CN02';
 
 
-
 INSERT INTO NhanVien (MaNV, HoTenNV, MaChiNhanh, MaKhuVuc, PhanQuyen, QuanLy_MaNV)
 VALUES 
 (N'NV01', N'Nguyễn Thị Quỳnh', N'CN01', N'KV01', 1, NULL),
@@ -406,5 +419,125 @@ update ChiTietHD
 set SoLuong = 3
 where MaHang = N'H04'
 
+---------------------
+--2. Cập nhật tổng tiền hóa đơn
+---------------------
+IF OBJECT_ID('trg_CapNhatTongTien', 'TR') IS NOT NULL
+    DROP TRIGGER trg_CapNhatTongTien;
+GO
 
+CREATE TRIGGER trg_CapNhatTongTien
+ON ChiTietHD
+AFTER INSERT, UPDATE, DELETE
+AS
+BEGIN
+    SET NOCOUNT ON;
 
+    -- Cập nhật tổng tiền cho các hóa đơn bị ảnh hưởng
+    UPDATE hd
+    SET TongTien = (
+        SELECT SUM(ThanhTien)
+        FROM ChiTietHD
+        WHERE MaHD = hd.MaHD
+    )
+    FROM HoaDon hd
+    WHERE EXISTS (
+        SELECT 1
+        FROM inserted i
+        WHERE i.MaHD = hd.MaHD
+    )
+    OR EXISTS (
+        SELECT 1
+        FROM deleted d
+        WHERE d.MaHD = hd.MaHD
+    );
+END;
+GO
+
+SELECT * FROM HoaDon WHERE MaHD = 'HD01';
+
+UPDATE ChiTietHD
+SET SoLuong = 2
+WHERE MaHD = 'HD01' AND MaHang = 'H04';
+
+SELECT * FROM ChiTietHD
+
+--------------------------
+-- 3 Thống kê tồn kho theo chi nhánh
+--------------------------
+IF OBJECT_ID('sp_ThongKeTonKhoTheoChiNhanh', 'P') IS NOT NULL
+    DROP PROCEDURE sp_ThongKeTonKhoTheoChiNhanh;
+GO
+
+CREATE PROCEDURE sp_ThongKeTonKhoTheoChiNhanh
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT 
+        tk.MaChiNhanh,
+        cn.TenChiNhanh,
+        tk.MaHang,
+        hh.TenHang,
+        SUM(tk.SoLuongTon) AS TongTonKho
+    FROM TonKho tk
+    JOIN HangHoa hh ON tk.MaHang = hh.MaHang
+    JOIN ChiNhanh cn ON tk.MaChiNhanh = cn.MaChiNhanh
+    GROUP BY tk.MaChiNhanh, cn.TenChiNhanh, tk.MaHang, hh.TenHang
+    ORDER BY tk.MaChiNhanh, tk.MaHang;
+END;
+GO
+
+EXEC sp_ThongKeTonKhoTheoChiNhanh;
+
+--------------------------
+--4 Tìm khách hàng theo loại
+--------------------------
+IF OBJECT_ID('sp_TimKhachHangVIP', 'P') IS NOT NULL
+    DROP PROCEDURE sp_TimKhachHangVIP;
+GO
+
+CREATE PROCEDURE sp_TimKhachHangVIP
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT 
+        MaKH,
+        HoTen,
+        DiemTichLuy,
+        LoaiKH
+    FROM KhachHang
+    WHERE LoaiKH = N'VIP' OR DiemTichLuy >= 500;
+END;
+GO
+
+EXEC sp_TimKhachHangVIP;
+
+-------------------------
+-- 5 Tìm hàng hóa sắp hết
+-------------------------
+IF OBJECT_ID('sp_TimHangSapHet', 'P') IS NOT NULL
+    DROP PROCEDURE sp_TimHangSapHet;
+GO
+
+CREATE PROCEDURE sp_TimHangSapHet
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT 
+        tk.MaChiNhanh,
+        cn.TenChiNhanh,
+        tk.MaHang,
+        hh.TenHang,
+        tk.SoLuongTon
+    FROM TonKho tk
+    JOIN HangHoa hh ON tk.MaHang = hh.MaHang
+    JOIN ChiNhanh cn ON tk.MaChiNhanh = cn.MaChiNhanh
+    WHERE tk.SoLuongTon <= 10
+    ORDER BY tk.MaChiNhanh, tk.MaHang;
+END;
+GO
+
+EXEC sp_TimHangSapHet;
